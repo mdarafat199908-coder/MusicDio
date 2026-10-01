@@ -1,0 +1,453 @@
+name: Build Music Dio APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get source
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Create Android project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/musicdio
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "MusicDio"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.6.1" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+          }
+
+          android {
+              namespace = "com.musicdio"
+              compileSdk = 35
+
+              defaultConfig {
+                  applicationId = "com.musicdio"
+                  minSdk = 23
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission
+                  android:name="android.permission.READ_EXTERNAL_STORAGE"
+                  android:maxSdkVersion="32" />
+
+              <application
+                  android:theme="@android:style/Theme.Material.NoActionBar"
+                  android:label="Music Dio"
+                  android:allowBackup="false"
+                  android:supportsRtl="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:screenOrientation="portrait"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/musicdio/MainActivity.java <<'EOF'
+          package com.musicdio;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.os.Build;
+          import android.content.pm.PackageManager;
+          import android.provider.MediaStore;
+          import android.database.Cursor;
+          import android.net.Uri;
+          import android.media.MediaPlayer;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.*;
+          import java.util.ArrayList;
+
+          public class MainActivity extends Activity {
+
+              private final ArrayList<String> names = new ArrayList<>();
+              private final ArrayList<Uri> uris = new ArrayList<>();
+
+              private MediaPlayer player;
+              private int current = -1;
+
+              private TextView currentSong;
+              private TextView countText;
+              private Button playButton;
+              private ListView list;
+
+              private static final int AUDIO_PERMISSION = 10;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  buildUI();
+
+                  if (hasPermission()) {
+                      loadSongs();
+                  } else {
+                      requestPermission();
+                  }
+              }
+
+              private void buildUI() {
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(Color.rgb(15, 15, 18));
+
+                  TextView header = new TextView(this);
+                  header.setText("Music Dio");
+                  header.setTextColor(Color.WHITE);
+                  header.setTextSize(28);
+                  header.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  header.setGravity(Gravity.CENTER);
+                  header.setPadding(10, 30, 10, 10);
+
+                  countText = new TextView(this);
+                  countText.setText("Your Music");
+                  countText.setTextColor(Color.LTGRAY);
+                  countText.setTextSize(15);
+                  countText.setPadding(22, 5, 10, 10);
+
+                  LinearLayout playerBox = new LinearLayout(this);
+                  playerBox.setOrientation(LinearLayout.VERTICAL);
+                  playerBox.setGravity(Gravity.CENTER);
+                  playerBox.setPadding(20, 20, 20, 15);
+
+                  currentSong = new TextView(this);
+                  currentSong.setText("No song playing");
+                  currentSong.setTextColor(Color.WHITE);
+                  currentSong.setTextSize(18);
+                  currentSong.setGravity(Gravity.CENTER);
+                  currentSong.setPadding(10, 5, 10, 15);
+
+                  LinearLayout buttons = new LinearLayout(this);
+                  buttons.setGravity(Gravity.CENTER);
+
+                  Button previous = new Button(this);
+                  previous.setText("⏮");
+
+                  playButton = new Button(this);
+                  playButton.setText("▶");
+
+                  Button next = new Button(this);
+                  next.setText("⏭");
+
+                  buttons.addView(previous);
+                  buttons.addView(playButton);
+                  buttons.addView(next);
+
+                  playerBox.addView(currentSong);
+                  playerBox.addView(buttons);
+
+                  list = new ListView(this);
+                  list.setBackgroundColor(Color.rgb(25, 25, 29));
+
+                  root.addView(header);
+                  root.addView(countText);
+                  root.addView(playerBox);
+                  root.addView(list,
+                      new LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          0, 1));
+
+                  setContentView(root);
+
+                  playButton.setOnClickListener(v -> togglePlay());
+                  next.setOnClickListener(v -> nextSong());
+                  previous.setOnClickListener(v -> previousSong());
+
+                  list.setOnItemClickListener(
+                      (parent, view, position, id) -> playSong(position));
+              }
+
+              private boolean hasPermission() {
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      return checkSelfPermission(
+                          Manifest.permission.READ_MEDIA_AUDIO)
+                          == PackageManager.PERMISSION_GRANTED;
+                  }
+
+                  return checkSelfPermission(
+                      Manifest.permission.READ_EXTERNAL_STORAGE)
+                      == PackageManager.PERMISSION_GRANTED;
+              }
+
+              private void requestPermission() {
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(
+                          new String[]{Manifest.permission.READ_MEDIA_AUDIO},
+                          AUDIO_PERMISSION);
+                  } else {
+                      requestPermissions(
+                          new String[]{Manifest.permission.READ_EXTERNAL_STORAGE},
+                          AUDIO_PERMISSION);
+                  }
+              }
+
+              private void loadSongs() {
+                  names.clear();
+                  uris.clear();
+
+                  Uri collection =
+                      MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+
+                  String[] projection = {
+                      MediaStore.Audio.Media._ID,
+                      MediaStore.Audio.Media.TITLE
+                  };
+
+                  String selection =
+                      MediaStore.Audio.Media.IS_MUSIC + " != 0";
+
+                  Cursor cursor = getContentResolver().query(
+                      collection,
+                      projection,
+                      selection,
+                      null,
+                      MediaStore.Audio.Media.TITLE + " ASC");
+
+                  if (cursor != null) {
+                      int idColumn = cursor.getColumnIndex(
+                          MediaStore.Audio.Media._ID);
+
+                      int titleColumn = cursor.getColumnIndex(
+                          MediaStore.Audio.Media.TITLE);
+
+                      while (cursor.moveToNext()) {
+                          long id = cursor.getLong(idColumn);
+                          String title = cursor.getString(titleColumn);
+
+                          names.add(title);
+                          uris.add(Uri.withAppendedPath(
+                              collection, String.valueOf(id)));
+                      }
+
+                      cursor.close();
+                  }
+
+                  ArrayAdapter<String> adapter =
+                      new ArrayAdapter<String>(
+                          this,
+                          android.R.layout.simple_list_item_1,
+                          names) {
+
+                          @Override
+                          public View getView(
+                              int position,
+                              View convertView,
+                              android.view.ViewGroup parent) {
+
+                              TextView v = (TextView) super.getView(
+                                  position, convertView, parent);
+
+                              v.setTextColor(Color.WHITE);
+                              v.setTextSize(17);
+                              v.setPadding(25, 22, 15, 22);
+
+                              return v;
+                          }
+                      };
+
+                  list.setAdapter(adapter);
+
+                  countText.setText(names.size() + " songs");
+
+                  if (names.isEmpty()) {
+                      currentSong.setText("No music found");
+                  }
+              }
+
+              private void playSong(int position) {
+                  if (position < 0 || position >= uris.size()) {
+                      return;
+                  }
+
+                  releasePlayer();
+
+                  current = position;
+
+                  try {
+                      player = MediaPlayer.create(this, uris.get(position));
+
+                      if (player == null) {
+                          Toast.makeText(
+                              this,
+                              "Cannot play this song",
+                              Toast.LENGTH_SHORT).show();
+                          return;
+                      }
+
+                      player.setOnCompletionListener(
+                          mp -> nextSong());
+
+                      player.start();
+
+                      playButton.setText("⏸");
+                      currentSong.setText(names.get(position));
+
+                  } catch (Exception e) {
+                      Toast.makeText(
+                          this,
+                          "Playback error",
+                          Toast.LENGTH_SHORT).show();
+                  }
+              }
+
+              private void togglePlay() {
+                  if (player == null) {
+                      if (!uris.isEmpty()) {
+                          playSong(0);
+                      }
+                      return;
+                  }
+
+                  if (player.isPlaying()) {
+                      player.pause();
+                      playButton.setText("▶");
+                  } else {
+                      player.start();
+                      playButton.setText("⏸");
+                  }
+              }
+
+              private void nextSong() {
+                  if (uris.isEmpty()) return;
+
+                  int next = current + 1;
+
+                  if (next >= uris.size()) {
+                      next = 0;
+                  }
+
+                  playSong(next);
+              }
+
+              private void previousSong() {
+                  if (uris.isEmpty()) return;
+
+                  int previous = current - 1;
+
+                  if (previous < 0) {
+                      previous = uris.size() - 1;
+                  }
+
+                  playSong(previous);
+              }
+
+              private void releasePlayer() {
+                  if (player != null) {
+                      try {
+                          player.stop();
+                      } catch (Exception ignored) {}
+
+                      player.release();
+                      player = null;
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(
+                  int requestCode,
+                  String[] permissions,
+                  int[] results) {
+
+                  super.onRequestPermissionsResult(
+                      requestCode, permissions, results);
+
+                  if (requestCode == AUDIO_PERMISSION &&
+                      results.length > 0 &&
+                      results[0] == PackageManager.PERMISSION_GRANTED) {
+
+                      loadSongs();
+
+                  } else {
+                      Toast.makeText(
+                          this,
+                          "Music permission is required",
+                          Toast.LENGTH_LONG).show();
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
+                  releasePlayer();
+                  super.onDestroy();
+              }
+          }
+          EOF
+
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicDio-APK
+          path: app/build/outputs/apk/debug/app-debug.apk{{
